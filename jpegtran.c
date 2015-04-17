@@ -34,14 +34,93 @@
  * The main program in this file doesn't actually use this capability...
  */
 
+typedef int value_type;
+
+struct arraylist {
+  int size;
+  value_type* data;
+};
+
+extern void arraylist_initial(struct arraylist *list);
+extern int arraylist_get_size(const struct arraylist list);
+extern value_type* arraylist_get_data_collection(const struct arraylist list);
+extern void arraylist_set_data_collection(struct arraylist *list, value_type* data);
+extern int arraylist_add(struct arraylist *list, value_type value);
+extern value_type arraylist_get(const struct arraylist list, int index);
+extern int arraylist_indexof(const struct arraylist list, value_type value);
+
+void arraylist_initial(struct arraylist *list) {
+  list->size = 0;
+  list->data = NULL;
+}
+
+int arraylist_get_size(const struct arraylist list) {
+  return list.size;
+}
+
+value_type* arraylist_get_data_collection(const struct arraylist list) {
+  return list.data;
+}
+
+void arraylist_set_data_collection(struct arraylist *list, value_type* data) {
+  list->data = data;
+}
+
+int arraylist_add(struct arraylist *list, value_type value) {
+  int size = arraylist_get_size(*list);
+  value_type *new_data;
+
+  new_data = (value_type *)realloc(list->data, (size + 1) * sizeof new_data[0]);
+
+  if (new_data)
+  {
+      new_data[size] = value;
+      arraylist_set_data_collection(list, new_data);
+      ++list->size;
+  }
+  return 1;
+}
+
+
+struct arraylist values(char *line)
+{
+	struct arraylist u;
+
+	char* token = strtok(line, " ");
+	while (token) {
+		// srcX
+		arraylist_add(&u, atoi(token));
+		token = strtok(NULL, " ");
+		// srcY
+		arraylist_add(&u, atoi(token));
+		token = strtok(NULL, " ");
+		// destX
+		arraylist_add(&u, atoi(token));
+		token = strtok(NULL, " ");
+		// destY
+		arraylist_add(&u, atoi(token));
+		token = strtok(NULL, " ");
+		// width
+		arraylist_add(&u, atoi(token));
+		token = strtok(NULL, " ");
+		// height
+		arraylist_add(&u, atoi(token));
+
+		// next change set
+		token = strtok(NULL, " ");
+	}
+	return u;
+}
 
 static const char * progname;	/* program name for error messages */
 static char * outfilename;	/* for -outfile switch */
+static char * dropfilename;	/* for -drop switch */
 static char * scaleoption;	/* -scale switch */
 static JCOPY_OPTION copyoption;	/* -copy switch */
 static jpeg_transform_info transformoption; /* image transformation options */
 
-
+void do_crop(unsigned char *srcbuffer, long src_size, unsigned char **outbuffer, long *out_size, char *crop_spec);
+void do_drop1(unsigned char *srcbuffer, long src_size, unsigned char *dropbuffer, long drop_size, unsigned char **outbuffer, long *out_size, char *writefile, char *crop_spec);
 LOCAL(void)
 usage (void)
 /* complain about bad command line */
@@ -66,6 +145,7 @@ usage (void)
   fprintf(stderr, "Switches for modifying the image:\n");
 #if TRANSFORMS_SUPPORTED
   fprintf(stderr, "  -crop WxH+X+Y  Crop to a rectangular subarea\n");
+  fprintf(stderr, "  -drop +X+Y filename          Drop another image\n");
   fprintf(stderr, "  -flip [horizontal|vertical]  Mirror image (left-right or top-bottom)\n");
   fprintf(stderr, "  -grayscale     Reduce to grayscale (omit color data)\n");
   fprintf(stderr, "  -perfect       Fail if there is non-transformable edge blocks\n");
@@ -76,6 +156,7 @@ usage (void)
   fprintf(stderr, "  -transpose     Transpose image\n");
   fprintf(stderr, "  -transverse    Transverse transpose image\n");
   fprintf(stderr, "  -trim          Drop non-transformable edge blocks\n");
+  fprintf(stderr, "                 with -drop: Requantize drop file to source file\n");
   fprintf(stderr, "  -wipe WxH+X+Y  Wipe (gray out) a rectangular subarea\n");
 #endif
   fprintf(stderr, "Switches for advanced users:\n");
@@ -188,12 +269,32 @@ parse_switches (j_compress_ptr cinfo, int argc, char **argv,
 #if TRANSFORMS_SUPPORTED
       if (++argn >= argc)	/* advance to next argument */
 	usage();
-      if (transformoption.crop /* reject multiple crop/wipe requests */ ||
+      if (transformoption.crop /* reject multiple crop/drop/wipe requests */ ||
 	  ! jtransform_parse_crop_spec(&transformoption, argv[argn])) {
 	fprintf(stderr, "%s: bogus -crop argument '%s'\n",
 		progname, argv[argn]);
 	exit(EXIT_FAILURE);
       }
+#else
+      select_transform(JXFORM_NONE);	/* force an error */
+#endif
+
+    } else if (keymatch(arg, "drop", 2)) {
+#if TRANSFORMS_SUPPORTED
+      if (++argn >= argc)	/* advance to next argument */
+	usage();
+      if (transformoption.crop /* reject multiple crop/drop/wipe requests */ ||
+	  ! jtransform_parse_crop_spec(&transformoption, argv[argn]) ||
+	  transformoption.crop_width_set != JCROP_UNSET ||
+	  transformoption.crop_height_set != JCROP_UNSET) {
+	fprintf(stderr, "%s: bogus -drop argument '%s'\n",
+		progname, argv[argn]);
+	exit(EXIT_FAILURE);
+      }
+      if (++argn >= argc)	/* advance to next argument */
+	usage();
+      dropfilename = argv[argn];
+      select_transform(JXFORM_DROP);
 #else
       select_transform(JXFORM_NONE);	/* force an error */
 #endif
@@ -342,7 +443,7 @@ parse_switches (j_compress_ptr cinfo, int argc, char **argv,
 #if TRANSFORMS_SUPPORTED
       if (++argn >= argc)	/* advance to next argument */
 	usage();
-      if (transformoption.crop /* reject multiple crop/wipe requests */ ||
+      if (transformoption.crop /* reject multiple crop/drop/wipe requests */ ||
 	  ! jtransform_parse_crop_spec(&transformoption, argv[argn])) {
 	fprintf(stderr, "%s: bogus -wipe argument '%s'\n",
 		progname, argv[argn]);
@@ -377,36 +478,102 @@ parse_switches (j_compress_ptr cinfo, int argc, char **argv,
   return argn;			/* return index of next arg (file name) */
 }
 
-
+static struct arraylist a;
 /*
  * The main program.
  */
-
 int
 main (int argc, char **argv)
 {
+  int number = 0;
+  int max;
+  unsigned char *drop_img = NULL;
+  long drop_size;
+  unsigned char *out_img = NULL;
+  long out_size;
+  unsigned char *src_img = NULL;
+  char cropspec[100];
+
+  int *decoder;
+
+  FILE *f;
+
+  char *line = NULL;
+  size_t size;
+  getline(&line, &size, stdin);
+  puts(line);
+  a = values(line);
+
+  puts("HERE");
+  decoder = a.data;
+  max = a.size;
+
+  // read the image
+  f = fopen(argv[1], "rb");
+  fseek(f, 0, SEEK_END);
+  out_size = ftell(f);
+  fseek(f, 0, SEEK_SET);
+
+  out_img = (unsigned char *)malloc(out_size + 1);
+  src_img = out_img;
+  fread(out_img, out_size, 1, f);
+  fclose(f);
+
+
+  //cropspec = sprintf("%dx%d+%d+%d", ...[number+], ...[number+ ], ...[number+], ...[number+]);
+  //do_crop(NULL, 0, &drop_img, &drop_size, infile, cropspec);
+  // needs out_img = original img
+  while (number < max) {
+	unsigned char *temp_img = NULL;
+	long temp_size;
+   // sprintf(cropspec, "%dx%d+%d+%d", decoder[number+4], decoder[number+5], decoder[number+2], decoder[number+3]);
+   // do_crop(src_img, out_size, &drop_img, &drop_size, cropspec);
+
+	sprintf(cropspec, "+%d+%d", decoder[number], decoder[number+1]);
+    do_drop1(out_img, out_size, src_img, out_size, &temp_img, &temp_size, NULL, cropspec);
+    free(drop_img);
+	drop_img = NULL;
+    if (number > 5) free(out_img);
+    out_img = temp_img;
+    out_size = temp_size;
+	//printf("%dx%d+%d+%d\n", decoder[number+4], decoder[number+5], decoder[number+2], decoder[number+3]);
+	printf(cropspec);
+	//printf("\n");
+    number += 6; // width, height, srcX, srcY, destX, destY
+	//printf("Got here: %d %d", max, number);
+	break;
+  }
+  //printf("Got here: %d %d", max, number);
+  //sprintf(cropspec, "%dx%d+%d+%d",  decoder[number+4], decoder[number+5], decoder[number+2], decoder[number+3]);
+  //do_crop(out_img, out_size, &drop_img, &drop_size, cropspec);
+
+  //sprintf(cropspec, "+%d+%d",  decoder[number], decoder[number+1]);
+  //do_drop(out_img, out_size, drop_img, drop_size, NULL, 0, argv[2], cropspec);
+  f = fopen(argv[2], "wb");
+ // for (number = 0; number < out_size; number++) {
+	  fwrite(out_img, 1, out_size, f);
+ // }
+	  fclose(f);
+ // free(drop_img);
+  free(out_img);
+
+  return 0;
+}
+
+void do_crop(unsigned char *srcbuffer, long src_size, unsigned char **outbuffer, long *out_size, char *crop_spec)
+{
   struct jpeg_decompress_struct srcinfo;
+  struct jpeg_error_mgr jsrcerr;
+  struct jpeg_decompress_struct dropinfo;
+  struct jpeg_error_mgr jdroperr;
   struct jpeg_compress_struct dstinfo;
-  struct jpeg_error_mgr jsrcerr, jdsterr;
+  struct jpeg_error_mgr jdsterr;
 #ifdef PROGRESS_REPORT
   struct cdjpeg_progress_mgr progress;
 #endif
   jvirt_barray_ptr * src_coef_arrays;
   jvirt_barray_ptr * dst_coef_arrays;
   int file_index;
-  /* We assume all-in-memory processing and can therefore use only a
-   * single file pointer for sequential input and output operation. 
-   */
-  FILE * fp;
-
-  /* On Mac, fetch a command line. */
-#ifdef USE_CCOMMAND
-  argc = ccommand(&argv);
-#endif
-
-  progname = argv[0];
-  if (progname == NULL || progname[0] == 0)
-    progname = "jpegtran";	/* in case C library doesn't provide it */
 
   /* Initialize the JPEG decompression object with default error handling. */
   srcinfo.err = jpeg_std_error(&jsrcerr);
@@ -422,59 +589,20 @@ main (int argc, char **argv)
   enable_signal_catcher((j_common_ptr) &srcinfo);
 #endif
 
-  /* Scan command line to find file names.
-   * It is convenient to use just one switch-parsing routine, but the switch
-   * values read here are mostly ignored; we will rescan the switches after
-   * opening the input file.  Also note that most of the switches affect the
-   * destination JPEG object, so we parse into that and then copy over what
-   * needs to affects the source too.
-   */
-
-  file_index = parse_switches(&dstinfo, argc, argv, 0, FALSE);
+  file_index = parse_switches(&dstinfo, 0, NULL, 0, FALSE);
+  jtransform_parse_crop_spec(&transformoption, crop_spec);
+  //transformoption.transform = JXFORM_CROP;
+  transformoption.perfect = TRUE;
   jsrcerr.trace_level = jdsterr.trace_level;
   srcinfo.mem->max_memory_to_use = dstinfo.mem->max_memory_to_use;
-
-#ifdef TWO_FILE_COMMANDLINE
-  /* Must have either -outfile switch or explicit output file name */
-  if (outfilename == NULL) {
-    if (file_index != argc-2) {
-      fprintf(stderr, "%s: must name one input and one output file\n",
-	      progname);
-      usage();
-    }
-    outfilename = argv[file_index+1];
-  } else {
-    if (file_index != argc-1) {
-      fprintf(stderr, "%s: must name one input and one output file\n",
-	      progname);
-      usage();
-    }
-  }
-#else
-  /* Unix style: expect zero or one file name */
-  if (file_index < argc-1) {
-    fprintf(stderr, "%s: only one input file\n", progname);
-    usage();
-  }
-#endif /* TWO_FILE_COMMANDLINE */
-
-  /* Open the input file. */
-  if (file_index < argc) {
-    if ((fp = fopen(argv[file_index], READ_BINARY)) == NULL) {
-      fprintf(stderr, "%s: can't open %s for reading\n", progname, argv[file_index]);
-      exit(EXIT_FAILURE);
-    }
-  } else {
-    /* default input file is stdin */
-    fp = read_stdin();
-  }
 
 #ifdef PROGRESS_REPORT
   start_progress_monitor((j_common_ptr) &dstinfo, &progress);
 #endif
 
   /* Specify data source for decompression */
-  jpeg_stdio_src(&srcinfo, fp);
+  //jpeg_stdio_src(&srcinfo, fp);
+  jpeg_mem_src(&srcinfo, srcbuffer, src_size);
 
   /* Enable saving of extra markers that we want to copy */
   jcopy_markers_setup(&srcinfo, copyoption);
@@ -482,23 +610,12 @@ main (int argc, char **argv)
   /* Read file header */
   (void) jpeg_read_header(&srcinfo, TRUE);
 
-  /* Adjust default decompression parameters */
-  if (scaleoption != NULL)
-    if (sscanf(scaleoption, "%u/%u",
-	&srcinfo.scale_num, &srcinfo.scale_denom) < 1)
-      usage();
-
-  /* Any space needed by a transform option must be requested before
-   * jpeg_read_coefficients so that memory allocation will be done right.
-   */
-#if TRANSFORMS_SUPPORTED
   /* Fail right away if -perfect is given and transformation is not perfect.
    */
   if (!jtransform_request_workspace(&srcinfo, &transformoption)) {
     fprintf(stderr, "%s: transformation is not perfect\n", progname);
     exit(EXIT_FAILURE);
   }
-#endif
 
   /* Read source file as DCT coefficients */
   src_coef_arrays = jpeg_read_coefficients(&srcinfo);
@@ -509,40 +626,19 @@ main (int argc, char **argv)
   /* Adjust destination parameters if required by transform options;
    * also find out which set of coefficient arrays will hold the output.
    */
-#if TRANSFORMS_SUPPORTED
   dst_coef_arrays = jtransform_adjust_parameters(&srcinfo, &dstinfo,
 						 src_coef_arrays,
 						 &transformoption);
-#else
-  dst_coef_arrays = src_coef_arrays;
-#endif
-
-  /* Close input file, if we opened it.
-   * Note: we assume that jpeg_read_coefficients consumed all input
-   * until JPEG_REACHED_EOI, and that jpeg_finish_decompress will
-   * only consume more while (! cinfo->inputctl->eoi_reached).
-   * We cannot call jpeg_finish_decompress here since we still need the
-   * virtual arrays allocated from the source object for processing.
-   */
-  if (fp != stdin)
-    fclose(fp);
-
-  /* Open the output file. */
-  if (outfilename != NULL) {
-    if ((fp = fopen(outfilename, WRITE_BINARY)) == NULL) {
-      fprintf(stderr, "%s: can't open %s for writing\n", progname, outfilename);
-      exit(EXIT_FAILURE);
-    }
-  } else {
-    /* default output file is stdout */
-    fp = write_stdout();
-  }
 
   /* Adjust default compression parameters by re-parsing the options */
-  file_index = parse_switches(&dstinfo, argc, argv, 0, TRUE);
+  file_index = parse_switches(&dstinfo, 0, NULL, 0, TRUE);
+  jtransform_parse_crop_spec(&transformoption, crop_spec);
+ // transformoption.transform = JXFORM_CROP;
+  transformoption.perfect = TRUE;
 
   /* Specify data destination for compression */
-  jpeg_stdio_dest(&dstinfo, fp);
+  //jpeg_stdio_dest(&dstinfo, fp);
+  jpeg_mem_dest(&dstinfo, outbuffer, (unsigned long *)out_size);
 
   /* Start compressor (note no image data is actually written here) */
   jpeg_write_coefficients(&dstinfo, dst_coef_arrays);
@@ -551,27 +647,595 @@ main (int argc, char **argv)
   jcopy_markers_execute(&srcinfo, &dstinfo, copyoption);
 
   /* Execute image transformation, if any */
-#if TRANSFORMS_SUPPORTED
   jtransform_execute_transformation(&srcinfo, &dstinfo,
 				    src_coef_arrays,
 				    &transformoption);
-#endif
 
   /* Finish compression and release memory */
   jpeg_finish_compress(&dstinfo);
   jpeg_destroy_compress(&dstinfo);
+
   (void) jpeg_finish_decompress(&srcinfo);
   jpeg_destroy_decompress(&srcinfo);
 
-  /* Close output file, if we opened it */
-  if (fp != stdout)
-    fclose(fp);
+
+#ifdef PROGRESS_REPORT
+  end_progress_monitor((j_common_ptr) &dstinfo);
+#endif
+}
+
+void do_drop1(unsigned char *srcbuffer, long src_size, unsigned char *dropbuffer, long drop_size, unsigned char **outbuffer, long *out_size, char *writefile, char *crop_spec)
+{
+  struct jpeg_decompress_struct srcinfo;
+  struct jpeg_error_mgr jsrcerr;
+  struct jpeg_decompress_struct dropinfo;
+  struct jpeg_error_mgr jdroperr;
+  FILE * drop_file;
+  struct jpeg_compress_struct dstinfo;
+  struct jpeg_error_mgr jdsterr;
+#ifdef PROGRESS_REPORT
+  struct cdjpeg_progress_mgr progress;
+#endif
+  jvirt_barray_ptr * src_coef_arrays;
+  jvirt_barray_ptr * dst_coef_arrays;
+  int file_index;
+  int crop1, crop2;
+
+  FILE * fp;
+
+  /* Initialize the JPEG decompression object with default error handling. */
+  srcinfo.err = jpeg_std_error(&jsrcerr);
+  jpeg_create_decompress(&srcinfo);
+  /* Initialize the JPEG compression object with default error handling. */
+  dstinfo.err = jpeg_std_error(&jdsterr);
+  jpeg_create_compress(&dstinfo);
+
+  /* Now safe to enable signal catcher.
+   * Note: we assume only the decompression object will have virtual arrays.
+   */
+#ifdef NEED_SIGNAL_CATCHER
+  enable_signal_catcher((j_common_ptr) &srcinfo);
+#endif
+
+  file_index = parse_switches(&dstinfo, 0, NULL, 0, FALSE);
+
+  jtransform_parse_crop_spec(&transformoption, crop_spec);
+  transformoption.transform = JXFORM_DROP;
+  transformoption.perfect = TRUE;
+
+  jsrcerr.trace_level = jdsterr.trace_level;
+  srcinfo.mem->max_memory_to_use = dstinfo.mem->max_memory_to_use;
+
+  dropinfo.err = jpeg_std_error(&jdroperr);
+  jpeg_create_decompress(&dropinfo);
+  //jpeg_stdio_src(&dropinfo, drop_file);
+  jpeg_mem_src(&dropinfo, dropbuffer, drop_size);
+
+#ifdef PROGRESS_REPORT
+  start_progress_monitor((j_common_ptr) &dstinfo, &progress);
+#endif
+
+  /* Specify data source for decompression */
+  //jpeg_stdio_src(&srcinfo, fp);
+  jpeg_mem_src(&srcinfo, srcbuffer, src_size);
+
+  /* Enable saving of extra markers that we want to copy */
+  jcopy_markers_setup(&srcinfo, copyoption);
+
+  /* Read file header */
+  (void) jpeg_read_header(&srcinfo, TRUE);
+
+  (void) jpeg_read_header(&dropinfo, TRUE);
+  transformoption.crop_width = 64;
+  transformoption.crop_width_set = JCROP_POS;
+  transformoption.crop_height = 64;
+  transformoption.crop_height_set = JCROP_POS;
+  transformoption.drop_ptr = &dropinfo;
+
+  /* Fail right away if -perfect is given and transformation is not perfect.
+   */
+  if (!jtransform_request_workspace(&srcinfo, &transformoption)) {
+    fprintf(stderr, "%s: transformation is not perfect\n", progname);
+    exit(EXIT_FAILURE);
+  }
+
+  /* Read source file as DCT coefficients */
+  src_coef_arrays = jpeg_read_coefficients(&srcinfo);
+
+  transformoption.drop_coef_arrays = jpeg_read_coefficients(&dropinfo);
+
+
+  /* Initialize destination compression parameters from source values */
+  jpeg_copy_critical_parameters(&srcinfo, &dstinfo);
+
+  /* Adjust destination parameters if required by transform options;
+   * also find out which set of coefficient arrays will hold the output.
+   */
+  dst_coef_arrays = jtransform_adjust_parameters(&srcinfo, &dstinfo,
+						 src_coef_arrays,
+						 &transformoption);
+
+
+  /* Open the output file. */
+  if (writefile != NULL) {
+    if ((fp = fopen(writefile, WRITE_BINARY)) == NULL) {
+      fprintf(stderr, "%s: can't open %s for writing\n", progname, outfilename);
+      exit(EXIT_FAILURE);
+    }
+  } else {
+    /* default output file is stdout */
+    fp = write_stdout();
+  }
+
+  // END OPTIONAL FILE
+
+  /* Adjust default compression parameters by re-parsing the options */
+  file_index = parse_switches(&dstinfo, 0, NULL, 0, TRUE);
+  jtransform_parse_crop_spec(&transformoption, crop_spec);
+  transformoption.transform = JXFORM_DROP;
+  transformoption.perfect = TRUE;
+
+  /* Specify data destination for compression */
+
+  if (writefile != NULL) {
+	 jpeg_stdio_dest(&dstinfo, fp);
+  } else {
+    jpeg_mem_dest(&dstinfo, outbuffer, (unsigned long *)out_size);
+  }
+
+
+  /* Start compressor (note no image data is actually written here) */
+  jpeg_write_coefficients(&dstinfo, dst_coef_arrays);
+
+  /* Copy to the output file any extra markers that we want to preserve */
+  jcopy_markers_execute(&srcinfo, &dstinfo, copyoption);
+
+  /* Execute image transformation, if any */
+ // jtransform_execute_transformation(&srcinfo, &dstinfo,
+///				    src_coef_arrays,
+//				    &transformoption);
+  //printf("\nTHIS%d\n", transformoption.drop_height);
+  {
+	  int number = 0;
+	  int *decoder = a.data;
+
+	  while (number < a.size) {
+		  long temp_size;
+		  int crop_width, crop_height, srcX, srcY, destX, destY;
+		  char cropspec[100];
+		  crop_width = decoder[number+4];
+		  crop_height = decoder[number+5];
+		  srcX = decoder[number+2];
+		  srcY = decoder[number+3];
+
+		  destX = decoder[number];
+		  destY = decoder[number+1];
+
+		  // continually run the src coefficient array again
+		  // with new drop coefficient array and positions
+		  // and offsets
+		  sprintf(cropspec, "+%d+%d", srcX, srcY);
+
+		  //  transformoption.perfect = TRUE;
+
+
+		  jtransform_parse_crop_spec(&transformoption, cropspec);
+		  transformoption.crop_width = 32;
+		  transformoption.crop_width_set = JCROP_POS;
+		  transformoption.crop_height = 32;
+		  transformoption.crop_height_set = JCROP_POS;
+
+		  {
+			  JDIMENSION xoffset, yoffset, dtemp;
+			  JDIMENSION width_in_iMCUs, height_in_iMCUs;
+			  JDIMENSION width_in_blocks, height_in_blocks;
+			  int itemp, ci, h_samp_factor, v_samp_factor;
+
+			  if (transformoption.perfect) {
+				  if (transformoption.num_components == 1) {
+					  if (!jtransform_perfect_transform(transformoption.output_width,
+						  srcinfo.output_height,
+						  srcinfo.min_DCT_h_scaled_size,
+						  srcinfo.min_DCT_v_scaled_size,
+						  transformoption.transform))
+						  return;
+				  } else {
+					  if (!jtransform_perfect_transform(srcinfo.output_width,
+						  srcinfo.output_height,
+						  srcinfo.max_h_samp_factor * srcinfo.min_DCT_h_scaled_size,
+						  srcinfo.max_v_samp_factor * srcinfo.min_DCT_v_scaled_size,
+						  transformoption.transform))
+						  return;
+				  }
+			  }
+
+			  /* If there is only one output component, force the iMCU size to be 1;
+			  * else use the source iMCU size.  (This allows us to do the right thing
+			  * when reducing color to grayscale, and also provides a handy way of
+			  * cleaning up "funny" grayscale images whose sampling factors are not 1x1.)
+			  */
+			  switch (transformoption.transform) {
+			  case JXFORM_TRANSPOSE:
+			  case JXFORM_TRANSVERSE:
+			  case JXFORM_ROT_90:
+			  case JXFORM_ROT_270:
+				  transformoption.output_width = srcinfo.output_height;
+				  transformoption.output_height = srcinfo.output_width;
+				  if (transformoption.num_components == 1) {
+					  transformoption.iMCU_sample_width = srcinfo.min_DCT_v_scaled_size;
+					  transformoption.iMCU_sample_height = srcinfo.min_DCT_h_scaled_size;
+				  } else {
+					  transformoption.iMCU_sample_width =
+						  srcinfo.max_v_samp_factor * srcinfo.min_DCT_v_scaled_size;
+					  transformoption.iMCU_sample_height =
+						  srcinfo.max_h_samp_factor * srcinfo.min_DCT_h_scaled_size;
+				  }
+				  break;
+			  default:
+				  transformoption.output_width = srcinfo.output_width;
+				  transformoption.output_height = srcinfo.output_height;
+				  if (transformoption.num_components == 1) {
+					  transformoption.iMCU_sample_width = srcinfo.min_DCT_h_scaled_size;
+					  transformoption.iMCU_sample_height = srcinfo.min_DCT_v_scaled_size;
+				  } else {
+					  transformoption.iMCU_sample_width =
+						  srcinfo.max_h_samp_factor * srcinfo.min_DCT_h_scaled_size;
+					  transformoption.iMCU_sample_height =
+						  srcinfo.max_v_samp_factor * srcinfo.min_DCT_v_scaled_size;
+				  }
+				  break;
+			  }
+
+			  /* If cropping has been requested, compute the crop area's position and
+			  * dimensions, ensuring that its upper left corner falls at an iMCU boundary.
+			  */
+			  if (transformoption.crop) {
+				  /* Insert default values for unset crop parameters */
+				  if (transformoption.crop_xoffset_set == JCROP_UNSET)
+					  transformoption.crop_xoffset = 0;	/* default to +0 */
+				  if (transformoption.crop_yoffset_set == JCROP_UNSET)
+					  transformoption.crop_yoffset = 0;	/* default to +0 */
+				  if (transformoption.crop_width_set == JCROP_UNSET) {
+					  if (transformoption.crop_xoffset >= transformoption.output_width)
+						  return;
+					  transformoption.crop_width = transformoption.output_width - transformoption.crop_xoffset;
+				  } else {
+					  /* Check for crop extension */
+					  if (transformoption.crop_width > transformoption.output_width) {
+						  /* Crop extension does not work when transforming! */
+						  if (transformoption.transform != JXFORM_NONE ||
+							  transformoption.crop_xoffset >= transformoption.crop_width ||
+							  transformoption.crop_xoffset > transformoption.crop_width - transformoption.output_width)
+							  return;
+					  } else {
+						  if (transformoption.crop_xoffset >= transformoption.output_width ||
+							  transformoption.crop_width <= 0 ||
+							  transformoption.crop_xoffset > transformoption.output_width - transformoption.crop_width)
+							  return;
+					  }
+				  }
+				  if (transformoption.crop_height_set == JCROP_UNSET) {
+					  if (transformoption.crop_yoffset >= transformoption.output_height)
+						  return;
+					  transformoption.crop_height = transformoption.output_height - transformoption.crop_yoffset;
+				  } else {
+					  /* Check for crop extension */
+					  if (transformoption.crop_height > transformoption.output_height) {
+						  /* Crop extension does not work when transforming! */
+						  if (transformoption.transform != JXFORM_NONE ||
+							  transformoption.crop_yoffset >= transformoption.crop_height ||
+							  transformoption.crop_yoffset > transformoption.crop_height - transformoption.output_height)
+							  return;
+					  } else {
+						  if (transformoption.crop_yoffset >= transformoption.output_height ||
+							  transformoption.crop_height <= 0 ||
+							  transformoption.crop_yoffset > transformoption.output_height - transformoption.crop_height)
+							  return;
+					  }
+				  }
+				  /* Convert negative crop offsets into regular offsets */
+				  if (transformoption.crop_xoffset_set != JCROP_NEG)
+					  xoffset = transformoption.crop_xoffset;
+				  else if (transformoption.crop_width > transformoption.output_width) /* crop extension */
+					  xoffset = transformoption.crop_width - transformoption.output_width - transformoption.crop_xoffset;
+				  else
+					  xoffset = transformoption.output_width - transformoption.crop_width - transformoption.crop_xoffset;
+				  if (transformoption.crop_yoffset_set != JCROP_NEG)
+					  yoffset = transformoption.crop_yoffset;
+				  else if (transformoption.crop_height > transformoption.output_height) /* crop extension */
+					  yoffset = transformoption.crop_height - transformoption.output_height - transformoption.crop_yoffset;
+				  else
+					  yoffset = transformoption.output_height - transformoption.crop_height - transformoption.crop_yoffset;
+				  /* Now adjust so that upper left corner falls at an iMCU boundary */
+				  switch (transformoption.transform) {
+				  case JXFORM_DROP:
+					  /* Ensure the effective drop region will not exceed the requested */
+					  itemp = transformoption.iMCU_sample_width;
+					  dtemp = itemp - 1 - ((xoffset + itemp - 1) % itemp);
+					  xoffset += dtemp;
+					  if (transformoption.crop_width <= dtemp)
+						  transformoption.drop_width = 0;
+					  else if (xoffset + transformoption.crop_width - dtemp == transformoption.output_width)
+						  /* Matching right edge: include partial iMCU */
+						  transformoption.drop_width = (transformoption.crop_width - dtemp + itemp - 1) / itemp;
+					  else
+						  transformoption.drop_width = (transformoption.crop_width - dtemp) / itemp;
+					  itemp = transformoption.iMCU_sample_height;
+					  dtemp = itemp - 1 - ((yoffset + itemp - 1) % itemp);
+					  yoffset += dtemp;
+					  if (transformoption.crop_height <= dtemp)
+						  transformoption.drop_height = 0;
+					  else if (yoffset + transformoption.crop_height - dtemp == transformoption.output_height)
+						  /* Matching bottom edge: include partial iMCU */
+						  transformoption.drop_height = (transformoption.crop_height - dtemp + itemp - 1) / itemp;
+					  else
+						  transformoption.drop_height = (transformoption.crop_height - dtemp) / itemp;
+					  /* Check if sampling factors match for dropping */
+					  if (transformoption.drop_width != 0 && transformoption.drop_height != 0)
+						  for (ci = 0; ci < transformoption.num_components &&
+							  ci < transformoption.drop_ptr->num_components; ci++) {
+								  if (transformoption.drop_ptr->comp_info[ci].h_samp_factor *
+									  srcinfo.max_h_samp_factor !=
+									  srcinfo.comp_info[ci].h_samp_factor *
+									  transformoption.drop_ptr->max_h_samp_factor)
+									  return;
+								  if (transformoption.drop_ptr->comp_info[ci].v_samp_factor *
+									  srcinfo.max_v_samp_factor !=
+									  srcinfo.comp_info[ci].v_samp_factor *
+									  transformoption.drop_ptr->max_v_samp_factor)
+									  return;
+						  }
+						  break;
+				  default:
+					  /* Ensure the effective crop region will cover the requested */
+					  if (transformoption.crop_width_set == JCROP_FORCE ||
+						  transformoption.crop_width > transformoption.output_width)
+						  transformoption.output_width = transformoption.crop_width;
+					  else
+						  transformoption.output_width =
+						  transformoption.crop_width + (xoffset % transformoption.iMCU_sample_width);
+					  if (transformoption.crop_height_set == JCROP_FORCE ||
+						  transformoption.crop_height > transformoption.output_height)
+						  transformoption.output_height = transformoption.crop_height;
+					  else
+						  transformoption.output_height =
+						  transformoption.crop_height + (yoffset % transformoption.iMCU_sample_height);
+					  break;
+				  }
+				  /* Save x/y offsets measured in iMCUs */
+				  transformoption.x_crop_offset = xoffset / transformoption.iMCU_sample_width;
+				  transformoption.y_crop_offset = yoffset / transformoption.iMCU_sample_height;
+			  } else {
+				  transformoption.x_crop_offset = 0;
+				  transformoption.y_crop_offset = 0;
+			  }
+
+		  }
+
+		  sprintf(cropspec, "+%d+%d", destX, destY);
+		  //  transformoption.perfect = TRUE;
+
+		  crop2 = transformoption.y_crop_offset;
+		  crop1 = transformoption.x_crop_offset;
+		  // second
+		  jtransform_parse_crop_spec(&transformoption, cropspec);
+		  transformoption.crop_width = crop_width;
+		  transformoption.crop_width_set = JCROP_POS;
+		  transformoption.crop_height = crop_height;
+		  transformoption.crop_height_set = JCROP_POS;
+
+		  {
+			  JDIMENSION xoffset, yoffset, dtemp;
+			  JDIMENSION width_in_iMCUs, height_in_iMCUs;
+			  JDIMENSION width_in_blocks, height_in_blocks;
+			  int itemp, ci, h_samp_factor, v_samp_factor;
+
+			  if (transformoption.perfect) {
+				  if (transformoption.num_components == 1) {
+					  if (!jtransform_perfect_transform(transformoption.output_width,
+						  srcinfo.output_height,
+						  srcinfo.min_DCT_h_scaled_size,
+						  srcinfo.min_DCT_v_scaled_size,
+						  transformoption.transform))
+						  return;
+				  } else {
+					  if (!jtransform_perfect_transform(srcinfo.output_width,
+						  srcinfo.output_height,
+						  srcinfo.max_h_samp_factor * srcinfo.min_DCT_h_scaled_size,
+						  srcinfo.max_v_samp_factor * srcinfo.min_DCT_v_scaled_size,
+						  transformoption.transform))
+						  return;
+				  }
+			  }
+
+			  /* If there is only one output component, force the iMCU size to be 1;
+			  * else use the source iMCU size.  (This allows us to do the right thing
+			  * when reducing color to grayscale, and also provides a handy way of
+			  * cleaning up "funny" grayscale images whose sampling factors are not 1x1.)
+			  */
+			  switch (transformoption.transform) {
+			  case JXFORM_TRANSPOSE:
+			  case JXFORM_TRANSVERSE:
+			  case JXFORM_ROT_90:
+			  case JXFORM_ROT_270:
+				  transformoption.output_width = srcinfo.output_height;
+				  transformoption.output_height = srcinfo.output_width;
+				  if (transformoption.num_components == 1) {
+					  transformoption.iMCU_sample_width = srcinfo.min_DCT_v_scaled_size;
+					  transformoption.iMCU_sample_height = srcinfo.min_DCT_h_scaled_size;
+				  } else {
+					  transformoption.iMCU_sample_width =
+						  srcinfo.max_v_samp_factor * srcinfo.min_DCT_v_scaled_size;
+					  transformoption.iMCU_sample_height =
+						  srcinfo.max_h_samp_factor * srcinfo.min_DCT_h_scaled_size;
+				  }
+				  break;
+			  default:
+				  transformoption.output_width = srcinfo.output_width;
+				  transformoption.output_height = srcinfo.output_height;
+				  if (transformoption.num_components == 1) {
+					  transformoption.iMCU_sample_width = srcinfo.min_DCT_h_scaled_size;
+					  transformoption.iMCU_sample_height = srcinfo.min_DCT_v_scaled_size;
+				  } else {
+					  transformoption.iMCU_sample_width =
+						  srcinfo.max_h_samp_factor * srcinfo.min_DCT_h_scaled_size;
+					  transformoption.iMCU_sample_height =
+						  srcinfo.max_v_samp_factor * srcinfo.min_DCT_v_scaled_size;
+				  }
+				  break;
+			  }
+
+			  /* If cropping has been requested, compute the crop area's position and
+			  * dimensions, ensuring that its upper left corner falls at an iMCU boundary.
+			  */
+			  if (transformoption.crop) {
+				  /* Insert default values for unset crop parameters */
+				  if (transformoption.crop_xoffset_set == JCROP_UNSET)
+					  transformoption.crop_xoffset = 0;	/* default to +0 */
+				  if (transformoption.crop_yoffset_set == JCROP_UNSET)
+					  transformoption.crop_yoffset = 0;	/* default to +0 */
+				  if (transformoption.crop_width_set == JCROP_UNSET) {
+					  if (transformoption.crop_xoffset >= transformoption.output_width)
+						  return;
+					  transformoption.crop_width = transformoption.output_width - transformoption.crop_xoffset;
+				  } else {
+					  /* Check for crop extension */
+					  if (transformoption.crop_width > transformoption.output_width) {
+						  /* Crop extension does not work when transforming! */
+						  if (transformoption.transform != JXFORM_NONE ||
+							  transformoption.crop_xoffset >= transformoption.crop_width ||
+							  transformoption.crop_xoffset > transformoption.crop_width - transformoption.output_width)
+							  return;
+					  } else {
+						  if (transformoption.crop_xoffset >= transformoption.output_width ||
+							  transformoption.crop_width <= 0 ||
+							  transformoption.crop_xoffset > transformoption.output_width - transformoption.crop_width)
+							  return;
+					  }
+				  }
+				  if (transformoption.crop_height_set == JCROP_UNSET) {
+					  if (transformoption.crop_yoffset >= transformoption.output_height)
+						  return;
+					  transformoption.crop_height = transformoption.output_height - transformoption.crop_yoffset;
+				  } else {
+					  /* Check for crop extension */
+					  if (transformoption.crop_height > transformoption.output_height) {
+						  /* Crop extension does not work when transforming! */
+						  if (transformoption.transform != JXFORM_NONE ||
+							  transformoption.crop_yoffset >= transformoption.crop_height ||
+							  transformoption.crop_yoffset > transformoption.crop_height - transformoption.output_height)
+							  return;
+					  } else {
+						  if (transformoption.crop_yoffset >= transformoption.output_height ||
+							  transformoption.crop_height <= 0 ||
+							  transformoption.crop_yoffset > transformoption.output_height - transformoption.crop_height)
+							  return;
+					  }
+				  }
+				  /* Convert negative crop offsets into regular offsets */
+				  if (transformoption.crop_xoffset_set != JCROP_NEG)
+					  xoffset = transformoption.crop_xoffset;
+				  else if (transformoption.crop_width > transformoption.output_width) /* crop extension */
+					  xoffset = transformoption.crop_width - transformoption.output_width - transformoption.crop_xoffset;
+				  else
+					  xoffset = transformoption.output_width - transformoption.crop_width - transformoption.crop_xoffset;
+				  if (transformoption.crop_yoffset_set != JCROP_NEG)
+					  yoffset = transformoption.crop_yoffset;
+				  else if (transformoption.crop_height > transformoption.output_height) /* crop extension */
+					  yoffset = transformoption.crop_height - transformoption.output_height - transformoption.crop_yoffset;
+				  else
+					  yoffset = transformoption.output_height - transformoption.crop_height - transformoption.crop_yoffset;
+				  /* Now adjust so that upper left corner falls at an iMCU boundary */
+				  switch (transformoption.transform) {
+				  case JXFORM_DROP:
+					  /* Ensure the effective drop region will not exceed the requested */
+					  itemp = transformoption.iMCU_sample_width;
+					  dtemp = itemp - 1 - ((xoffset + itemp - 1) % itemp);
+					  xoffset += dtemp;
+					  if (transformoption.crop_width <= dtemp)
+						  transformoption.drop_width = 0;
+					  else if (xoffset + transformoption.crop_width - dtemp == transformoption.output_width)
+						  /* Matching right edge: include partial iMCU */
+						  transformoption.drop_width = (transformoption.crop_width - dtemp + itemp - 1) / itemp;
+					  else
+						  transformoption.drop_width = (transformoption.crop_width - dtemp) / itemp;
+					  itemp = transformoption.iMCU_sample_height;
+					  dtemp = itemp - 1 - ((yoffset + itemp - 1) % itemp);
+					  yoffset += dtemp;
+					  if (transformoption.crop_height <= dtemp)
+						  transformoption.drop_height = 0;
+					  else if (yoffset + transformoption.crop_height - dtemp == transformoption.output_height)
+						  /* Matching bottom edge: include partial iMCU */
+						  transformoption.drop_height = (transformoption.crop_height - dtemp + itemp - 1) / itemp;
+					  else
+						  transformoption.drop_height = (transformoption.crop_height - dtemp) / itemp;
+					  /* Check if sampling factors match for dropping */
+					  if (transformoption.drop_width != 0 && transformoption.drop_height != 0)
+						  for (ci = 0; ci < transformoption.num_components &&
+							  ci < transformoption.drop_ptr->num_components; ci++) {
+								  if (transformoption.drop_ptr->comp_info[ci].h_samp_factor *
+									  srcinfo.max_h_samp_factor !=
+									  srcinfo.comp_info[ci].h_samp_factor *
+									  transformoption.drop_ptr->max_h_samp_factor)
+									  return;
+								  if (transformoption.drop_ptr->comp_info[ci].v_samp_factor *
+									  srcinfo.max_v_samp_factor !=
+									  srcinfo.comp_info[ci].v_samp_factor *
+									  transformoption.drop_ptr->max_v_samp_factor)
+									  return;
+						  }
+						  break;
+				  default:
+					  /* Ensure the effective crop region will cover the requested */
+					  if (transformoption.crop_width_set == JCROP_FORCE ||
+						  transformoption.crop_width > transformoption.output_width)
+						  transformoption.output_width = transformoption.crop_width;
+					  else
+						  transformoption.output_width =
+						  transformoption.crop_width + (xoffset % transformoption.iMCU_sample_width);
+					  if (transformoption.crop_height_set == JCROP_FORCE ||
+						  transformoption.crop_height > transformoption.output_height)
+						  transformoption.output_height = transformoption.crop_height;
+					  else
+						  transformoption.output_height =
+						  transformoption.crop_height + (yoffset % transformoption.iMCU_sample_height);
+					  break;
+				  }
+				  /* Save x/y offsets measured in iMCUs */
+				  transformoption.x_crop_offset = xoffset / transformoption.iMCU_sample_width;
+				  transformoption.y_crop_offset = yoffset / transformoption.iMCU_sample_height;
+			  } else {
+				  transformoption.x_crop_offset = 0;
+				  transformoption.y_crop_offset = 0;
+			  }
+
+		  }
+
+		  //printf("dfsdfs%d %d", transformoption.x_crop_offset, transformoption.y_crop_offset);
+		  do_drop(&srcinfo, &dstinfo, transformoption.x_crop_offset, transformoption.y_crop_offset,
+			  src_coef_arrays, &dropinfo, transformoption.drop_coef_arrays, transformoption.drop_width,
+			  transformoption.drop_height, crop1, crop2);
+
+		  number += 6;
+	  }
+
+  }
+
+  /* Finish compression and release memory */
+  jpeg_finish_compress(&dstinfo);
+  jpeg_destroy_compress(&dstinfo);
+  (void) jpeg_finish_decompress(&dropinfo);
+  jpeg_destroy_decompress(&dropinfo);
+
+
+  (void) jpeg_finish_decompress(&srcinfo);
+  jpeg_destroy_decompress(&srcinfo);
 
 #ifdef PROGRESS_REPORT
   end_progress_monitor((j_common_ptr) &dstinfo);
 #endif
 
-  /* All done. */
-  exit(jsrcerr.num_warnings + jdsterr.num_warnings ?EXIT_WARNING:EXIT_SUCCESS);
-  return 0;			/* suppress no-return-value warnings */
+  if (writefile != NULL && fp != stdout)
+    fclose(fp);
+
 }

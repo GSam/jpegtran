@@ -106,7 +106,8 @@ typedef enum {
 	JXFORM_ROT_90,		/* 90-degree clockwise rotation */
 	JXFORM_ROT_180,		/* 180-degree rotation */
 	JXFORM_ROT_270,		/* 270-degree clockwise (or 90 ccw) */
-	JXFORM_WIPE		/* wipe */
+	JXFORM_WIPE,		/* wipe */
+	JXFORM_DROP		/* drop */
 } JXFORM_CODE;
 
 /*
@@ -134,7 +135,7 @@ typedef struct {
   boolean perfect;		/* if TRUE, fail if partial MCUs are requested */
   boolean trim;			/* if TRUE, trim partial MCUs as needed */
   boolean force_grayscale;	/* if TRUE, convert color image to grayscale */
-  boolean crop;			/* if TRUE, crop or wipe source image */
+  boolean crop;			/* if TRUE, crop or wipe source image, or drop */
 
   /* Crop parameters: application need not set these unless crop is TRUE.
    * These can be filled in by jtransform_parse_crop_spec().
@@ -147,6 +148,10 @@ typedef struct {
   JCROP_CODE crop_xoffset_set;	/* (negative measures from right edge) */
   JDIMENSION crop_yoffset;	/* Y offset of selected region */
   JCROP_CODE crop_yoffset_set;	/* (negative measures from bottom edge) */
+
+  /* Drop parameters: set by caller for drop request */
+  j_decompress_ptr drop_ptr;
+  jvirt_barray_ptr * drop_coef_arrays;
 
   /* Internal workspace: caller should not touch these */
   int num_components;		/* # of components in workspace */
@@ -180,6 +185,11 @@ EXTERN(void) jtransform_execute_transform
 	JPP((j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
 	     jvirt_barray_ptr *src_coef_arrays,
 	     jpeg_transform_info *info));
+EXTERN(void) do_drop (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
+	 JDIMENSION x_crop_offset, JDIMENSION y_crop_offset,
+	 jvirt_barray_ptr *src_coef_arrays,
+	 j_decompress_ptr dropinfo, jvirt_barray_ptr *drop_coef_arrays,
+	 JDIMENSION drop_width, JDIMENSION drop_height, JDIMENSION x1_crop_offset, JDIMENSION y1_crop_offset);
 /* Determine whether lossless transformation is perfectly
  * possible for a specified image and transformation.
  */
