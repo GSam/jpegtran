@@ -519,27 +519,21 @@ main (int argc, char **argv)
   fread(out_img, out_size, 1, f);
   fclose(f);
 
-
-  //cropspec = sprintf("%dx%d+%d+%d", ...[number+], ...[number+ ], ...[number+], ...[number+]);
-  //do_crop(NULL, 0, &drop_img, &drop_size, infile, cropspec);
-  // needs out_img = original img
   while (number < max) {
 	unsigned char *temp_img = NULL;
 	long temp_size;
-   // sprintf(cropspec, "%dx%d+%d+%d", decoder[number+4], decoder[number+5], decoder[number+2], decoder[number+3]);
-   // do_crop(src_img, out_size, &drop_img, &drop_size, cropspec);
 
 	sprintf(cropspec, "+%d+%d", decoder[number], decoder[number+1]);
-    do_drop1(out_img, out_size, src_img, out_size, &temp_img, &temp_size, NULL, cropspec);
-    free(drop_img);
+	do_drop1(out_img, out_size, src_img, out_size, &temp_img, &temp_size, NULL, cropspec);
+	free(drop_img);
 	drop_img = NULL;
-    if (number > 5) free(out_img);
-    out_img = temp_img;
-    out_size = temp_size;
+	if (number > 5) free(out_img);
+	out_img = temp_img;
+	out_size = temp_size;
 	//printf("%dx%d+%d+%d\n", decoder[number+4], decoder[number+5], decoder[number+2], decoder[number+3]);
 	printf(cropspec);
 	//printf("\n");
-    number += 6; // width, height, srcX, srcY, destX, destY
+	number += 6; // width, height, srcX, srcY, destX, destY
 	//printf("Got here: %d %d", max, number);
 	break;
   }
