@@ -537,18 +537,13 @@ main (int argc, char **argv)
 	//printf("Got here: %d %d", max, number);
 	break;
   }
-  //printf("Got here: %d %d", max, number);
-  //sprintf(cropspec, "%dx%d+%d+%d",  decoder[number+4], decoder[number+5], decoder[number+2], decoder[number+3]);
-  //do_crop(out_img, out_size, &drop_img, &drop_size, cropspec);
 
-  //sprintf(cropspec, "+%d+%d",  decoder[number], decoder[number+1]);
-  //do_drop(out_img, out_size, drop_img, drop_size, NULL, 0, argv[2], cropspec);
   f = fopen(argv[2], "wb");
- // for (number = 0; number < out_size; number++) {
-	  fwrite(out_img, 1, out_size, f);
- // }
+  // for (number = 0; number < out_size; number++) {
+  fwrite(out_img, 1, out_size, f);
+  // }
 	  fclose(f);
- // free(drop_img);
+  // free(drop_img);
   free(out_img);
 
   return 0;
@@ -785,9 +780,9 @@ void do_drop1(unsigned char *srcbuffer, long src_size, unsigned char *dropbuffer
   jcopy_markers_execute(&srcinfo, &dstinfo, copyoption);
 
   /* Execute image transformation, if any */
- // jtransform_execute_transformation(&srcinfo, &dstinfo,
-///				    src_coef_arrays,
-//				    &transformoption);
+  // jtransform_execute_transformation(&srcinfo, &dstinfo,
+  //				    src_coef_arrays,
+  //				    &transformoption);
   //printf("\nTHIS%d\n", transformoption.drop_height);
   {
 	  int number = 0;
